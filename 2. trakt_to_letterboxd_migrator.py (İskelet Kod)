@@ -1,0 +1,369 @@
+import requests
+import json
+import csv
+import os
+from datetime import datetime
+
+# --- YAPILANDIRMA VE SABİTLER ---
+# Kullanıcıdan alınacak veya bir config dosyasından okunacak
+# Güvenlik için bu değerleri doğrudan koda yazmayın!
+# İlk çalıştırmada kullanıcıdan alıp bir config dosyasında saklamak iyi bir yöntem olabilir.
+CLIENT_ID = ""
+CLIENT_SECRET = ""
+ACCESS_TOKEN = "" # Kimlik doğrulama sonrası alınacak token
+
+# Trakt API Uç Noktaları
+TRAKT_API_BASE_URL = "https://api.trakt.tv"
+TRAKT_OAUTH_AUTHORIZE_URL = f"{TRAKT_API_BASE_URL}/oauth/authorize"
+TRAKT_OAUTH_TOKEN_URL = f"{TRAKT_API_BASE_URL}/oauth/token"
+REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob" # PIN tabanlı kimlik doğrulama için
+
+# Letterboxd CSV Başlıkları
+LETTERBOXD_WATCHED_HEADERS = ['Title', 'Year', 'WatchedDate', 'Rating', 'imdbID', 'tmdbID', 'Review'] # Review eklenebilir
+LETTERBOXD_LIST_HEADERS = ['Title', 'Year', 'imdbID', 'tmdbID']
+LETTERBOXD_RATINGS_HEADERS = ['Title', 'Year', 'Rating', 'imdbID', 'tmdbID'] # Genellikle izlenenlerle birleşir
+
+# --- YARDIMCI FONKSİYONLAR ---
+
+def load_config():
+    """
+    Yapılandırma dosyasından (örneğin config.json) Client ID ve Secret'ı yükler.
+    Yoksa kullanıcıdan alır ve kaydeder.
+    """
+    global CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN
+    config_file = "trakt_config.json"
+    try:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+            CLIENT_ID = config.get("CLIENT_ID")
+            CLIENT_SECRET = config.get("CLIENT_SECRET")
+            ACCESS_TOKEN = config.get("ACCESS_TOKEN")
+            if not CLIENT_ID or not CLIENT_SECRET:
+                print("Client ID veya Client Secret config dosyasında bulunamadı.")
+                setup_credentials(config_file)
+            # Token süresi dolmuş olabilir, bu yüzden her zaman yenilemek gerekebilir
+            # veya token'ı kontrol edip gerekirse yenilemek için bir mekanizma kurulabilir.
+            # Şimdilik basit tutuyoruz.
+    except FileNotFoundError:
+        print("Yapılandırma dosyası bulunamadı. Lütfen bilgileri girin.")
+        setup_credentials(config_file)
+
+def setup_credentials(config_file):
+    """Kullanıcıdan Client ID ve Secret alıp kaydeder."""
+    global CLIENT_ID, CLIENT_SECRET
+    CLIENT_ID = input("Lütfen Trakt.tv Client ID'nizi girin: ").strip()
+    CLIENT_SECRET = input("Lütfen Trakt.tv Client Secret'ınızı girin: ").strip()
+    with open(config_file, 'w') as f:
+        json.dump({"CLIENT_ID": CLIENT_ID, "CLIENT_SECRET": CLIENT_SECRET, "ACCESS_TOKEN": ""}, f)
+    print(f"Credentials '{config_file}' dosyasına kaydedildi.")
+
+def save_access_token(token_data):
+    """Access token ve refresh token'ı kaydeder."""
+    global ACCESS_TOKEN
+    config_file = "trakt_config.json"
+    ACCESS_TOKEN = token_data.get("access_token")
+    config_data = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+    
+    config_data["ACCESS_TOKEN"] = ACCESS_TOKEN
+    config_data["REFRESH_TOKEN"] = token_data.get("refresh_token")
+    config_data["TOKEN_EXPIRES_IN"] = token_data.get("expires_in")
+    config_data["TOKEN_CREATED_AT"] = token_data.get("created_at")
+
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f)
+    print("Access token kaydedildi.")
+
+
+def get_trakt_pin_authorization():
+    """
+    Kullanıcıyı Trakt.tv'ye PIN kodu almak üzere yönlendirir veya bilgilendirir.
+    PIN kodunu alıp access token talep eder.
+    """
+    global ACCESS_TOKEN
+
+    if ACCESS_TOKEN: # Basit bir token kontrolü, daha gelişmiş refresh token mekanizması kurulabilir
+        print("Mevcut bir access token bulundu. Kimlik doğrulama adımı atlanıyor.")
+        # Burada token'ın geçerliliğini kontrol etmek iyi bir pratik olurdu.
+        # Eğer token geçerliyse True döndür.
+        # Şimdilik her zaman yeniden kimlik doğrulaması yapıyormuş gibi davranalım.
+        # return True 
+        pass # Devam et, aşağıda token ile istek yapılıp yapılamadığına bakılacak.
+
+    # Adım 1: Kullanıcıya PIN alması için bilgi ver
+    # Client ID'yi URL'ye eklemek daha spesifik bir PIN sayfası sunabilir (Trakt dokümantasyonuna göre değişir)
+    # authorize_url_with_client_id = f"{TRAKT_OAUTH_AUTHORIZE_URL}?response_type=code&client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+    # print(f"Lütfen şu adrese gidin ve uygulamanıza yetki verin: {authorize_url_with_client_id}")
+    # Ya da daha genel bir yönlendirme:
+    print("-" * 50)
+    print("Trakt.tv Kimlik Doğrulaması (PIN ile)")
+    print("1. Tarayıcınızda https://trakt.tv/oauth/applications adresine gidin.")
+    print(f"2. '{CLIENT_ID}' ID'li (veya uygulamanıza verdiğiniz isimdeki) uygulamanızın yanındaki 'AUTHORIZE' butonuna tıklayın.")
+    print("3. Açılan sayfada size 8 haneli bir PIN kodu verilecektir.")
+    print("-" * 50)
+    
+    pin_code = input("Lütfen Trakt.tv'den aldığınız 8 haneli PIN kodunu girin: ").strip()
+
+    # Adım 2: PIN kodu ile Access Token talep et
+    token_payload = {
+        "code": pin_code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code"
+    }
+
+    try:
+        response = requests.post(TRAKT_OAUTH_TOKEN_URL, json=token_payload)
+        response.raise_for_status()  # HTTP hatalarında exception fırlatır
+        token_data = response.json()
+        
+        save_access_token(token_data)
+        print("Trakt.tv ile başarıyla kimlik doğrulandı!")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"Hata: Trakt.tv'den access token alınamadı. Sebep: {e}")
+        if response is not None:
+            print(f"Yanıt İçeriği: {response.text}")
+        return False
+
+def trakt_api_request(endpoint, params=None):
+    """Trakt API'sine yetkilendirilmiş istek yapar."""
+    if not ACCESS_TOKEN:
+        print("Hata: Access token bulunamadı. Lütfen önce kimlik doğrulaması yapın.")
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "trakt-api-version": "2",
+        "trakt-api-key": CLIENT_ID, # Client ID aynı zamanda API Key olarak da kullanılır
+        "Authorization": f"Bearer {ACCESS_TOKEN}"
+    }
+    
+    try:
+        response = requests.get(f"{TRAKT_API_BASE_URL}{endpoint}", headers=headers, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Hata: Trakt API isteği başarısız oldu ({endpoint}). Sebep: {e}")
+        if response is not None:
+            print(f"Yanıt İçeriği: {response.text}")
+        return None
+
+def get_watched_movies():
+    """İzlenen filmleri Trakt.tv'den çeker."""
+    print("İzlenen filmler çekiliyor...")
+    # Not: Bu sadece ilk sayfayı çeker. Sayfalama (pagination) implemente edilmeli!
+    # Trakt API'si genellikle `limit` ve `page` parametreleri ile sayfalama yapar.
+    # Ya da `extended=full` gibi parametrelerle daha fazla detay alınabilir.
+    data = trakt_api_request("/sync/history/movies", params={"extended": "full"})
+    
+    # Örnek veri yapısı (Trakt'tan gelen):
+    # [
+    #   {
+    #     "watched_at": "2023-05-15T10:00:00.000Z",
+    #     "movie": {
+    #       "title": "The Matrix",
+    #       "year": 1999,
+    #       "ids": { "trakt": 1, "slug": "the-matrix-1999", "imdb": "tt0133093", "tmdb": 603 }
+    #     }
+    #   }, ...
+    # ]
+    # Birden fazla izleme varsa aynı film için, en sonuncusu veya ilki seçilebilir.
+    # Letterboxd her film için tek bir izleme tarihi ve puan kabul eder (günlükte farklı).
+    # Şimdilik en son izlemeyi alalım ve filmleri tekilleştirelim.
+    
+    processed_movies = {}
+    if data:
+        for item in data:
+            movie_info = item.get("movie", {})
+            if not movie_info: continue
+
+            imdb_id = movie_info.get("ids", {}).get("imdb")
+            if not imdb_id: continue # IMDb ID'si olmayanları atla (Letterboxd için önemli)
+
+            watched_at_str = item.get("watched_at")
+            watched_date = ""
+            if watched_at_str:
+                try:
+                    watched_date = datetime.fromisoformat(watched_at_str.replace("Z", "+00:00")).strftime('%Y-%m-%d')
+                except ValueError:
+                    pass # Tarih formatı hatalıysa boş bırak
+
+            # Eğer film daha önce işlendiyse ve yeni izleme tarihi daha eskiyse, eskisini koru (ya da tam tersi, kararına bağlı)
+            # Letterboxd için genellikle en son izleme tarihi mantıklı olabilir.
+            # Ya da ilk izleme tarihi. Bu script şimdilik en sonuncuyu (API'den geldiği sırayla üzerine yazarak) alacak gibi.
+            processed_movies[imdb_id] = {
+                'Title': movie_info.get("title"),
+                'Year': movie_info.get("year"),
+                'WatchedDate': watched_date,
+                'imdbID': imdb_id,
+                'tmdbID': movie_info.get("ids", {}).get("tmdb"),
+                'Rating': None # Puanları ayrı bir API çağrısıyla alacağız
+            }
+        print(f"{len(processed_movies)} adet izlenmiş film bulundu.")
+        return list(processed_movies.values())
+    return []
+
+def get_movie_ratings(watched_movies_list):
+    """Filmlere verilen puanları çeker ve izlenenler listesine ekler."""
+    print("Film puanları çekiliyor...")
+    data = trakt_api_request("/sync/ratings/movies", params={"extended": "full"})
+    
+    # Örnek veri yapısı:
+    # [
+    #   {
+    #     "rated_at": "2023-05-15T11:00:00.000Z",
+    #     "rating": 9, # Trakt puanı (1-10)
+    #     "movie": { ... }
+    #   }, ...
+    # ]
+
+    if not data:
+        print("Puan bulunamadı veya çekilemedi.")
+        return watched_movies_list
+
+    ratings_map = {}
+    for item in data:
+        movie_info = item.get("movie", {})
+        imdb_id = movie_info.get("ids", {}).get("imdb")
+        if imdb_id and "rating" in item:
+            # Letterboxd 0.5-5 arası (yarım puanlı)
+            # Trakt 1-10 arası (tam puanlı)
+            # Dönüşüm: trakt_rating / 2.0
+            letterboxd_rating = item["rating"] / 2.0
+            ratings_map[imdb_id] = letterboxd_rating
+            
+    # İzlenen film listesindeki filmlere puanları ekle
+    for movie in watched_movies_list:
+        if movie['imdbID'] in ratings_map:
+            movie['Rating'] = ratings_map[movie['imdbID']]
+            
+    print(f"{len(ratings_map)} adet film için puan bilgisi işlendi.")
+    return watched_movies_list
+
+def get_watchlist_movies():
+    """İzleme listesindeki filmleri çeker."""
+    print("İzleme listesi (watchlist) çekiliyor...")
+    data = trakt_api_request("/sync/watchlist/movies", params={"extended": "full"})
+    # Yapısı watched_movies'e benzer ama "watched_at" yerine "listed_at" olabilir.
+    # Letterboxd için sadece Title, Year, imdbID, tmdbID yeterli.
+    
+    watchlist_movies = []
+    if data:
+        for item in data:
+            movie_info = item.get("movie", {})
+            if movie_info and movie_info.get("ids", {}).get("imdb"):
+                watchlist_movies.append({
+                    'Title': movie_info.get("title"),
+                    'Year': movie_info.get("year"),
+                    'imdbID': movie_info.get("ids", {}).get("imdb"),
+                    'tmdbID': movie_info.get("ids", {}).get("tmdb")
+                })
+        print(f"{len(watchlist_movies)} adet film izleme listesinde bulundu.")
+    return watchlist_movies
+    
+def get_custom_lists():
+    """Kullanıcının özel listelerini ve içlerindeki filmleri çeker."""
+    print("Özel listeler çekiliyor...")
+    lists_data = trakt_api_request("/users/me/lists")
+    
+    all_custom_lists_items = {} # { "liste_slug": [film_objeleri], ... }
+
+    if not lists_data:
+        print("Özel liste bulunamadı.")
+        return all_custom_lists_items
+
+    for lst in lists_data:
+        list_name = lst.get("name")
+        list_slug = lst.get("ids", {}).get("slug") # Liste adı yerine slug kullanmak daha güvenli olabilir dosya adı için
+        if not list_name or not list_slug:
+            continue
+
+        print(f"'{list_name}' listesindeki filmler çekiliyor...")
+        # Her listenin item'larını çek
+        # Dikkat: Bu API çağrısı /users/{username}/lists/{list_id_or_slug}/items/movies şeklinde olmalı
+        # "me" yerine gerçek kullanıcı adı gerekebilir veya API "me"yi destekliyorsa kullanılabilir.
+        # Dokümantasyona göre /users/me/lists/{id}/items/movies çalışmalı.
+        list_items_data = trakt_api_request(f"/users/me/lists/{list_slug}/items/movies", params={"extended": "full"})
+        
+        current_list_movies = []
+        if list_items_data:
+            for item in list_items_data:
+                movie_info = item.get("movie", {})
+                if movie_info and movie_info.get("ids", {}).get("imdb"):
+                    current_list_movies.append({
+                        'Title': movie_info.get("title"),
+                        'Year': movie_info.get("year"),
+                        'imdbID': movie_info.get("ids", {}).get("imdb"),
+                        'tmdbID': movie_info.get("ids", {}).get("tmdb")
+                    })
+            all_custom_lists_items[list_slug] = current_list_movies
+            print(f"'{list_name}' listesine {len(current_list_movies)} film eklendi.")
+            
+    return all_custom_lists_items
+
+def write_to_csv(filename, data, headers):
+    """Verilen datayı belirtilen CSV dosyasına yazar."""
+    if not data:
+        print(f"{filename} için veri bulunamadı, dosya oluşturulmayacak.")
+        return
+
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=headers)
+            writer.writeheader()
+            for row in data:
+                # Sadece header'da olan alanları yaz, fazlasını atla
+                filtered_row = {key: row.get(key) for key in headers}
+                writer.writerow(filtered_row)
+        print(f"Veri başarıyla '{filename}' dosyasına yazıldı.")
+    except IOError:
+        print(f"Hata: '{filename}' dosyasına yazılamadı.")
+
+# --- ANA İŞ AKIŞI ---
+def main():
+    print("Trakt.tv'den Letterboxd'ye Veri Aktarım Script'i Başlatılıyor...")
+    
+    load_config() # Client ID/Secret yükle/al
+
+    if not CLIENT_ID or not CLIENT_SECRET:
+        print("Client ID veya Client Secret eksik. Script sonlandırılıyor.")
+        return
+
+    if not get_trakt_pin_authorization():
+        print("Kimlik doğrulama başarısız. Script sonlandırılıyor.")
+        return
+
+    # 1. İzlenen Filmleri ve Puanlarını Çek
+    watched_movies = get_watched_movies()
+    if watched_movies:
+        watched_movies_with_ratings = get_movie_ratings(watched_movies)
+        # Letterboxd'nin "diary" importu için WatchedDate, Rating, Title, Year gerekli.
+        # Bazı import şablonları Review sütununu da kabul eder.
+        # İsteğe bağlı olarak 'Review' sütunu için boş değer veya Trakt'tan notlar çekilebilir.
+        for movie in watched_movies_with_ratings: # Review alanı için yer tutucu
+            movie['Review'] = '' 
+        write_to_csv("letterboxd_watched_films_diary.csv", watched_movies_with_ratings, LETTERBOXD_WATCHED_HEADERS)
+    
+    # 2. İzleme Listesini Çek
+    watchlist = get_watchlist_movies()
+    write_to_csv("letterboxd_watchlist.csv", watchlist, LETTERBOXD_LIST_HEADERS)
+
+    # 3. Özel Listeleri Çek
+    custom_lists_data = get_custom_lists()
+    for list_slug, movies_in_list in custom_lists_data.items():
+        # Dosya adı için slug'ı temizle (geçersiz karakterleri kaldır)
+        safe_list_name = "".join(c if c.isalnum() else "_" for c in list_slug)
+        write_to_csv(f"letterboxd_list_{safe_list_name}.csv", movies_in_list, LETTERBOXD_LIST_HEADERS)
+
+    print("-" * 50)
+    print("İşlem tamamlandı!")
+    print("Oluşturulan CSV dosyalarını Letterboxd'ye yükleyebilirsiniz.")
+    print("Unutmayın: Letterboxd'ye aktarım geri alınamaz, yüklemeden önce dosyaları kontrol edin!")
+
+if __name__ == "__main__":
+    main()
+
