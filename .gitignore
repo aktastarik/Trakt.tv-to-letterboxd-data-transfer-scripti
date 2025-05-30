@@ -1,18 +1,23 @@
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+pip-selfcheck.json
 
-# Other files and folders
-.settings/
+# Yapılandırma dosyaları (hassas bilgiler içerebilir)
+trakt_config.json
+config.ini
+*.secret
 
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
+# IDE dosyaları
+.vscode/
+.idea/
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
+# İşletim sistemi dosyaları
+.DS_Store
+Thumbs.db
