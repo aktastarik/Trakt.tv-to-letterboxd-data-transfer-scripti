@@ -32,7 +32,6 @@ Benim gibi hem Trakt.tv'nin detaylı dizi/film takibini ve topluluk özellikleri
 
 1.  **Projeyi İndirin/Klonlayın:**
     ```
-    git clone https://github.com/SENIN_KULLANICI_ADIN/trakt-to-letterboxd-migrator.git
     cd trakt-to-letterboxd-migrator
     ```
 
